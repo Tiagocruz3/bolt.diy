@@ -18,6 +18,29 @@ export default defineConfig((config) => {
     },
     build: {
       target: 'esnext',
+      rollupOptions: {
+        maxParallelFileOps: 2,
+        output: {
+          manualChunks: (id) => {
+            // Separate vendor chunks to reduce memory usage
+            if (id.includes('node_modules')) {
+              if (id.includes('@ai-sdk')) {
+                return 'vendor-ai';
+              }
+              if (id.includes('@codemirror') || id.includes('@lezer')) {
+                return 'vendor-codemirror';
+              }
+              if (id.includes('@remix-run')) {
+                return 'vendor-remix';
+              }
+              if (id.includes('react') || id.includes('react-dom')) {
+                return 'vendor-react';
+              }
+              return 'vendor';
+            }
+          },
+        },
+      },
     },
     plugins: [
       nodePolyfills({
