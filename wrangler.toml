@@ -1,6 +1,11 @@
 #:schema node_modules/wrangler/config-schema.json
-name = "bolt"
+name = "brainiac-ide"
 compatibility_flags = ["nodejs_compat"]
-compatibility_date = "2025-03-28"
+compatibility_date = "2025-10-31"
 pages_build_output_dir = "./build/client"
 send_metrics = false
+
+# Cloudflare Pages configuration
+# Build command: pnpm run build
+# Deploy uses Pages, not Workers
+# No version command needed for Pages
