@@ -2,6 +2,81 @@
 
 This application is configured to deploy to **Cloudflare Pages** (not Workers).
 
+## ✅ Build Status
+
+The build is working correctly!
+- Build time: ~1m 18s
+- Build output: `build/client`
+- Memory optimizations: ✓ Working
+
+## ⚠️ Current Issue
+
+Your Cloudflare Pages project has the **WRONG deployment command** configured:
+
+**Current (❌ WRONG):**
+```
+npx wrangler versions upload
+```
+
+This is a **Workers** command, not a **Pages** command!
+
+## 🔧 How to Fix - Cloudflare Pages Dashboard
+
+### Step-by-Step Instructions:
+
+1. **Go to Cloudflare Dashboard**
+   - URL: https://dash.cloudflare.com/
+
+2. **Navigate to your Pages project**
+   - Click: **Workers & Pages** in the left sidebar
+   - Find and click your project (likely named "bolt")
+
+3. **Go to Settings**
+   - Click: **Settings** tab
+   - Click: **Builds & deployments** section
+
+4. **Update Build Settings**
+
+   Set these values:
+
+   | Setting | Value |
+   |---------|-------|
+   | **Framework preset** | Remix |
+   | **Build command** | `npm run build` or `pnpm run build` |
+   | **Build output directory** | `build/client` |
+
+5. **⚠️ CRITICAL: Remove/Fix Deploy Command**
+
+   Look for any field labeled:
+   - "Deploy command"
+   - "Custom deploy command"
+   - "Post-build command"
+
+   **If you see `npx wrangler versions upload` or similar:**
+
+   ❌ **DELETE IT** or **LEAVE IT EMPTY**
+
+   Cloudflare Pages will automatically deploy the `build/client` directory.
+
+   **OR** if you must have a deploy command, use:
+   ```
+   npx wrangler pages deploy ./build/client
+   ```
+
+6. **Optional: Add Environment Variable**
+
+   Go to: **Settings → Environment Variables → Production**
+
+   Add:
+   ```
+   NODE_OPTIONS = --max-old-space-size=8192
+   ```
+
+7. **Save and Deploy**
+   - Click **Save**
+   - Go to **Deployments** tab
+   - Click **Create deployment** to trigger a new build
+
 ## Build Configuration
 
 The build process has been optimized to prevent out-of-memory errors:
