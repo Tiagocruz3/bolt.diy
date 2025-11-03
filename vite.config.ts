@@ -18,17 +18,26 @@ export default defineConfig((config) => {
     },
     build: {
       target: 'esnext',
+      // Explicitly disable sourcemaps to reduce memory usage during CI builds
+      sourcemap: false,
+    },
+    resolve: {
+      // Ensure browser-compatible implementation for Node's "path" module
+      alias: {
+        path: 'path-browserify',
+      },
     },
     plugins: [
       nodePolyfills({
-        include: ['buffer', 'process', 'util', 'stream'],
+        include: ['buffer', 'process', 'util', 'stream', 'path'],
         globals: {
           Buffer: true,
           process: true,
           global: true,
         },
         protocolImports: true,
-        exclude: ['child_process', 'fs', 'path'],
+        // Do not exclude "path" so browser builds can resolve it properly
+        exclude: ['child_process', 'fs'],
       }),
       {
         name: 'buffer-polyfill',
