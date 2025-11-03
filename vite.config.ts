@@ -20,6 +20,42 @@ export default defineConfig((config) => {
       target: 'esnext',
       // Explicitly disable sourcemaps to reduce memory usage during CI builds
       sourcemap: false,
+      // Reduce memory pressure in Rollup by aggressively splitting vendor chunks
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id || !id.includes('node_modules')) return undefined;
+
+            // Group by top-level package folder to avoid gigantic graphs
+            // e.g. node_modules/react/index.js -> vendor-react
+            // pnpm paths look like node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>/...
+            const afterFirstNodeModules = id.split('node_modules/')[1];
+            if (!afterFirstNodeModules) return undefined;
+
+            const normalized = afterFirstNodeModules.startsWith('.pnpm/')
+              ? afterFirstNodeModules.split('/node_modules/')[1] || afterFirstNodeModules
+              : afterFirstNodeModules;
+
+            const segments = normalized.split('/');
+            // Scoped packages keep two segments like @scope/pkg
+            const scopeOrPkg = segments[0]?.startsWith('@') && segments[1]
+              ? `${segments[0]}/${segments[1]}`
+              : segments[0];
+
+            // Bucket a few known heavy groups explicitly
+            if (scopeOrPkg.startsWith('@codemirror') || scopeOrPkg === 'codemirror') return 'vendor-codemirror';
+            if (scopeOrPkg.startsWith('@xterm') || scopeOrPkg === 'xterm') return 'vendor-xterm';
+            if (scopeOrPkg === 'shiki') return 'vendor-shiki';
+            if (scopeOrPkg === 'isomorphic-git') return 'vendor-git';
+            if (scopeOrPkg === 'chart.js') return 'vendor-chartjs';
+            if (scopeOrPkg.startsWith('@radix-ui')) return 'vendor-radix';
+            if (scopeOrPkg.startsWith('@remix-run')) return 'vendor-remix';
+            if (scopeOrPkg === 'react' || scopeOrPkg === 'react-dom') return 'vendor-react';
+
+            return `vendor-${scopeOrPkg.replace('@', '').replace('/', '-')}`;
+          },
+        },
+      },
     },
     resolve: {
       // Ensure browser-compatible implementation for Node's "path" module
