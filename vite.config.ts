@@ -12,6 +12,7 @@ dotenv.config({ path: '.env' });
 dotenv.config();
 
 export default defineConfig((config) => {
+  const isCloudflarePages = Boolean(process.env.CF_PAGES);
   return {
     define: {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
@@ -20,10 +21,15 @@ export default defineConfig((config) => {
       target: 'esnext',
       // Explicitly disable sourcemaps to reduce memory usage during CI builds
       sourcemap: false,
+      // Leaner CF Pages builds to prevent OOM during Rollup/minification steps
+      minify: isCloudflarePages ? false : undefined,
+      cssMinify: isCloudflarePages ? false : undefined,
+      reportCompressedSize: isCloudflarePages ? false : true,
       // Reduce memory pressure in Rollup by aggressively splitting vendor chunks
       rollupOptions: {
         output: {
           manualChunks(id) {
+            if (isCloudflarePages) return undefined; // let Rollup decide on CF to keep memory lower
             if (!id || !id.includes('node_modules')) return undefined;
 
             // Group by top-level package folder to avoid gigantic graphs
