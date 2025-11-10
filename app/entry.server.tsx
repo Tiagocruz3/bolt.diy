@@ -1,13 +1,3 @@
-// Polyfill Node.js globals for Vercel
-if (typeof globalThis.TextEncoder === 'undefined') {
-  const { TextEncoder, TextDecoder } = await import('util');
-  globalThis.TextEncoder = TextEncoder;
-  globalThis.TextDecoder = TextDecoder;
-}
-if (typeof global === 'undefined') {
-  globalThis.global = globalThis;
-}
-
 import type { AppLoadContext } from '@remix-run/cloudflare';
 import { RemixServer } from '@remix-run/react';
 import { isbot } from 'isbot';
@@ -23,6 +13,16 @@ export default async function handleRequest(
   remixContext: any,
   _loadContext: AppLoadContext,
 ) {
+  // Polyfill Node.js globals for Vercel SSR
+  if (typeof globalThis.TextEncoder === 'undefined') {
+    const { TextEncoder, TextDecoder } = await import('util');
+    globalThis.TextEncoder = TextEncoder;
+    globalThis.TextDecoder = TextDecoder;
+  }
+  if (typeof global === 'undefined') {
+    globalThis.global = globalThis;
+  }
+
   // await initializeModelList({});
 
   const readable = await renderToReadableStream(<RemixServer context={remixContext} url={request.url} />, {
