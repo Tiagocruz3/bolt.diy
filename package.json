@@ -1,14 +1,14 @@
 {
-  "name": "bolt",
-  "description": "An AI Agent",
+  "name": "brainiac-ide",
+  "description": "Brainiac IDE - An AI-powered development environment",
   "private": true,
   "license": "MIT",
   "sideEffects": false,
   "type": "module",
   "version": "1.0.0",
   "author": {
-    "name": "bolt.diy team",
-    "email": "maintainers@bolt.diy"
+    "name": "Brainiac IDE Team",
+    "email": "support@brainiac-ide.com"
   },
   "scripts": {
     "deploy": "npm run build && wrangler pages deploy",
