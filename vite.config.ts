@@ -18,6 +18,9 @@ export default defineConfig((config) => {
     define: {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
     },
+    ssr: {
+      noExternal: ['react-dom'],
+    },
     build: {
       target: 'esnext',
       // Explicitly disable sourcemaps to reduce memory usage during CI builds
