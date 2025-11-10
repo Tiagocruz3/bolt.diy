@@ -1,3 +1,13 @@
+// Polyfill Node.js globals for Vercel
+if (typeof globalThis.TextEncoder === 'undefined') {
+  const { TextEncoder, TextDecoder } = await import('util');
+  globalThis.TextEncoder = TextEncoder;
+  globalThis.TextDecoder = TextDecoder;
+}
+if (typeof global === 'undefined') {
+  globalThis.global = globalThis;
+}
+
 import type { AppLoadContext } from '@remix-run/cloudflare';
 import { RemixServer } from '@remix-run/react';
 import { isbot } from 'isbot';

@@ -113,40 +113,6 @@ export default defineConfig((config) => {
           return null;
         },
       },
-      {
-        name: 'node-globals-polyfill',
-        apply: 'build',
-        enforce: 'pre',
-        resolveId(id) {
-          if (id === '__node-globals-polyfill') {
-            return id;
-          }
-        },
-        load(id) {
-          if (id === '__node-globals-polyfill') {
-            return `
-              if (typeof global === 'undefined') {
-                globalThis.global = globalThis;
-              }
-              if (typeof TextEncoder === 'undefined') {
-                globalThis.TextEncoder = (await import('util')).TextEncoder;
-              }
-              if (typeof TextDecoder === 'undefined') {
-                globalThis.TextDecoder = (await import('util')).TextDecoder;
-              }
-            `;
-          }
-        },
-        transform(code, id) {
-          // Inject polyfill at the start of SSR entry
-          if (config.command === 'build' && id.includes('entry.server')) {
-            return {
-              code: `import '__node-globals-polyfill';\n${code}`,
-              map: null,
-            };
-          }
-        },
-      },
       config.mode !== 'test' && config.mode !== 'production' && remixCloudflareDevProxy(),
       remixVitePlugin({
         future: {
