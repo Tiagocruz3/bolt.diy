@@ -76,6 +76,8 @@ export default defineConfig((config) => {
       // Ensure browser-compatible implementation for Node's "path" module
       alias: {
         path: 'path-browserify',
+        // On non-Cloudflare targets (e.g., Vercel), use Node adapter APIs
+        ...(isCloudflarePages ? {} : { '@remix-run/cloudflare': '@remix-run/node' }),
       },
     },
     plugins: [
