@@ -1,7 +1,6 @@
 import { atom, computed } from 'nanostores';
 import Cookies from 'js-cookie';
 import { logStore } from '~/lib/stores/logs';
-import { GitLabApiService } from '~/lib/services/gitlabApiService';
 import { calculateStatsSummary } from '~/utils/gitlabStats';
 import type { GitLabConnection, GitLabStats } from '~/types/GitLab';
 
@@ -63,6 +62,7 @@ export const gitlabUrl = computed(gitlabUrlAtom, (url) => url);
 class GitLabConnectionStore {
   async connect(token: string, gitlabUrl = 'https://gitlab.com') {
     try {
+      const { GitLabApiService } = await import('~/lib/services/gitlabApiService');
       const apiService = new GitLabApiService(token, gitlabUrl);
 
       // Test connection by fetching user
@@ -122,6 +122,7 @@ class GitLabConnectionStore {
     }
 
     try {
+      const { GitLabApiService } = await import('~/lib/services/gitlabApiService');
       const apiService = new GitLabApiService(connection.token, connection.gitlabUrl || 'https://gitlab.com');
 
       // Fetch user data
@@ -230,6 +231,7 @@ class GitLabConnectionStore {
     }
 
     try {
+      const { GitLabApiService } = await import('~/lib/services/gitlabApiService');
       const apiService = new GitLabApiService(envToken);
       const user = await apiService.getUser();
 

@@ -57,6 +57,14 @@ export default defineConfig((config) => {
             if (scopeOrPkg.startsWith('@radix-ui')) return 'vendor-radix';
             if (scopeOrPkg.startsWith('@remix-run')) return 'vendor-remix';
             if (scopeOrPkg === 'react' || scopeOrPkg === 'react-dom') return 'vendor-react';
+            if (scopeOrPkg.startsWith('@ai-sdk')) return 'vendor-ai-sdk';
+            if (scopeOrPkg === 'ai') return 'vendor-ai';
+            if (scopeOrPkg.startsWith('@octokit')) return 'vendor-octokit';
+            if (scopeOrPkg === 'framer-motion') return 'vendor-framer';
+            if (scopeOrPkg === 'lucide-react') return 'vendor-lucide';
+            if (scopeOrPkg === 'zod') return 'vendor-zod';
+            if (scopeOrPkg === 'zustand') return 'vendor-zustand';
+            if (scopeOrPkg === 'nanostores') return 'vendor-nanostores';
 
             return `vendor-${scopeOrPkg.replace('@', '').replace('/', '-')}`;
           },
