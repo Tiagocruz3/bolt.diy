@@ -17,9 +17,16 @@ export default defineConfig((config) => {
   return {
     define: {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
+      // Ensure global is defined for SSR
+      global: 'globalThis',
     },
     ssr: {
       noExternal: ['react-dom'],
+      // Ensure Node.js globals are available in SSR context
+      resolve: {
+        conditions: ['node'],
+        externalConditions: ['node'],
+      },
     },
     build: {
       target: 'esnext',
