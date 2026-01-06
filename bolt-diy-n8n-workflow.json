@@ -1,0 +1,876 @@
+{
+  "name": "Bolt.DIY - AI Web Development Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-chat-input",
+      "name": "Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "bolt-chat",
+      "notes": "Receives user chat messages with format: { message: string, model?: string, provider?: string, files?: array }"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "={{ $json.body.sessionId }}_context"
+      },
+      "id": "load-session-context",
+      "name": "Load Session Context",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "notes": "Loads conversation history and project files from Redis. Uses sessionId as key."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse session context and prepare for LLM\nconst sessionData = $input.item.json.value ? JSON.parse($input.item.json.value) : {\n  messages: [],\n  files: {},\n  projectState: {}\n};\n\nconst userMessage = $('Chat Webhook').item.json.body.message;\nconst provider = $('Chat Webhook').item.json.body.provider || 'openai';\nconst model = $('Chat Webhook').item.json.body.model || 'gpt-4';\n\n// Add user message to history\nsessionData.messages.push({\n  role: 'user',\n  content: userMessage,\n  timestamp: new Date().toISOString()\n});\n\n// Build system prompt with context\nconst systemPrompt = buildSystemPrompt(sessionData.files);\n\n// Prepare messages for LLM\nconst llmMessages = [\n  { role: 'system', content: systemPrompt },\n  ...sessionData.messages.slice(-10) // Last 10 messages for context\n];\n\nreturn {\n  sessionData,\n  llmMessages,\n  provider,\n  model,\n  userMessage\n};\n\nfunction buildSystemPrompt(files) {\n  const fileContext = Object.keys(files).length > 0 \n    ? `\\n\\nCurrent Project Files:\\n${Object.keys(files).map(f => `- ${f}`).join('\\n')}`\n    : '';\n    \n  return `You are Bolt, an expert AI assistant and full-stack developer.\n\nYou can create and modify web applications. When responding, follow this format:\n\n<boltArtifact id=\"unique-id\" title=\"Project Title\">\n  <boltAction type=\"file\" filePath=\"path/to/file.ext\">\nFull file content here\n  </boltAction>\n  <boltAction type=\"shell\">\ncommand to run\n  </boltAction>\n  <boltAction type=\"start\">\ncommand to start dev server\n  </boltAction>\n</boltArtifact>\n\nSupported action types:\n- file: Create or update a file (include full content)\n- shell: Run a shell command\n- start: Start the development server\n- build: Build the project\n\nConstraints:\n- Use modern web technologies (React, Vue, Vite, etc.)\n- Provide complete, working code\n- No placeholders or TODOs\n- Use npm for package management\n- Write clean, production-ready code${fileContext}`;\n}\n"
+      },
+      "id": "prepare-llm-context",
+      "name": "Prepare LLM Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "notes": "Builds conversation history and system prompt with project context"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.provider }}",
+              "rightValue": "openai",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-by-provider",
+      "name": "Route by Provider",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [850, 300],
+      "notes": "Routes to appropriate LLM provider (OpenAI, Anthropic, etc.)"
+    },
+    {
+      "parameters": {
+        "model": "={{ $json.model }}",
+        "messages": {
+          "values": "={{ $json.llmMessages }}"
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 4000
+        }
+      },
+      "id": "openai-llm",
+      "name": "OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "={{ $json.model }}",
+        "messages": {
+          "values": "={{ $json.llmMessages }}"
+        }
+      },
+      "id": "anthropic-llm",
+      "name": "Anthropic",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-credentials",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response and extract actions\nconst aiResponse = $input.item.json.response || $input.item.json.output?.content;\nconst sessionData = $('Prepare LLM Context').item.json.sessionData;\n\n// Add AI response to message history\nsessionData.messages.push({\n  role: 'assistant',\n  content: aiResponse,\n  timestamp: new Date().toISOString()\n});\n\n// Parse boltArtifact tags\nconst artifactRegex = /<boltArtifact[^>]*id=\"([^\"]+)\"[^>]*title=\"([^\"]+)\"[^>]*>([\\s\\S]*?)<\\/boltArtifact>/g;\nconst actionRegex = /<boltAction[^>]*type=\"([^\"]+)\"(?:[^>]*filePath=\"([^\"]+)\")?[^>]*>([\\s\\S]*?)<\\/boltAction>/g;\n\nconst artifacts = [];\nlet artifactMatch;\n\nwhile ((artifactMatch = artifactRegex.exec(aiResponse)) !== null) {\n  const [, id, title, content] = artifactMatch;\n  const actions = [];\n  let actionMatch;\n  \n  // Reset regex\n  actionRegex.lastIndex = 0;\n  \n  while ((actionMatch = actionRegex.exec(content)) !== null) {\n    const [, type, filePath, actionContent] = actionMatch;\n    actions.push({\n      type,\n      filePath: filePath || null,\n      content: actionContent.trim()\n    });\n  }\n  \n  artifacts.push({ id, title, actions });\n}\n\nreturn {\n  aiResponse,\n  artifacts,\n  sessionData,\n  hasActions: artifacts.length > 0\n};"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "notes": "Extracts boltArtifact and boltAction tags from AI response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasActions }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-has-actions",
+      "name": "Has Actions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1450, 300],
+      "notes": "Determines if AI response contains executable actions"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "artifacts",
+        "options": {}
+      },
+      "id": "split-artifacts",
+      "name": "Split Artifacts",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1650, 200],
+      "notes": "Splits artifacts array into individual items for processing"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "actions",
+        "options": {}
+      },
+      "id": "split-actions",
+      "name": "Split Actions",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1850, 200],
+      "notes": "Splits actions within each artifact"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "file",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-by-action-type",
+      "name": "Route by Action Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2050, 200],
+      "notes": "Routes actions to appropriate handlers (file, shell, start, build)"
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bolt-projects",
+        "fileName": "={{ $('Chat Webhook').item.json.body.sessionId }}/{{ $json.filePath }}",
+        "fileContent": "={{ $json.content }}",
+        "options": {
+          "contentType": "text/plain"
+        }
+      },
+      "id": "save-file-to-storage",
+      "name": "Save File (S3/Storage)",
+      "type": "n8n-nodes-base.aws.s3",
+      "typeVersion": 1,
+      "position": [2250, 100],
+      "credentials": {
+        "aws": {
+          "id": "aws-credentials",
+          "name": "AWS S3"
+        }
+      },
+      "notes": "Saves file content to cloud storage (S3, MinIO, or similar)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update session files state\nconst sessionData = $('Parse AI Response').item.json.sessionData;\nconst filePath = $json.filePath;\nconst content = $json.content;\n\nsessionData.files[filePath] = {\n  content,\n  updatedAt: new Date().toISOString()\n};\n\nreturn { sessionData, filePath, content };"
+      },
+      "id": "update-file-state",
+      "name": "Update File State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 100],
+      "notes": "Updates in-memory file state for the session"
+    },
+    {
+      "parameters": {
+        "dockerImage": "node:20-alpine",
+        "command": "={{ $json.content }}",
+        "options": {
+          "workdir": "/workspace",
+          "volumes": [
+            "bolt-{{ $('Chat Webhook').item.json.body.sessionId }}:/workspace"
+          ]
+        }
+      },
+      "id": "execute-shell-command",
+      "name": "Execute Shell Command",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2250, 300],
+      "notes": "Runs shell commands in isolated Docker container"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store shell command result\nconst sessionData = $('Parse AI Response').item.json.sessionData;\nconst command = $json.content;\nconst output = $('Execute Shell Command').item.json.stdout;\nconst error = $('Execute Shell Command').item.json.stderr;\n\nif (!sessionData.projectState.commandHistory) {\n  sessionData.projectState.commandHistory = [];\n}\n\nsessionData.projectState.commandHistory.push({\n  command,\n  output,\n  error,\n  timestamp: new Date().toISOString()\n});\n\nreturn { sessionData, command, output, error };"
+      },
+      "id": "update-command-history",
+      "name": "Update Command History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 300],
+      "notes": "Tracks executed commands and their output"
+    },
+    {
+      "parameters": {
+        "dockerImage": "node:20-alpine",
+        "command": "sh -c 'cd /workspace && {{ $json.content }}'",
+        "options": {
+          "workdir": "/workspace",
+          "volumes": [
+            "bolt-{{ $('Chat Webhook').item.json.body.sessionId }}:/workspace"
+          ],
+          "detach": true,
+          "portMappings": [
+            "{{ $json.port || 5173 }}:{{ $json.port || 5173 }}"
+          ]
+        }
+      },
+      "id": "start-dev-server",
+      "name": "Start Dev Server",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2250, 500],
+      "notes": "Starts development server in background (Vite, Next.js, etc.)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Track running dev server\nconst sessionData = $('Parse AI Response').item.json.sessionData;\nconst command = $json.content;\nconst port = $json.port || 5173;\n\nsessionData.projectState.devServer = {\n  running: true,\n  command,\n  port,\n  url: `http://localhost:${port}`,\n  startedAt: new Date().toISOString()\n};\n\nreturn { sessionData, devServerUrl: sessionData.projectState.devServer.url };"
+      },
+      "id": "update-server-state",
+      "name": "Update Server State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 500],
+      "notes": "Tracks dev server status and preview URL"
+    },
+    {
+      "parameters": {},
+      "id": "merge-action-results",
+      "name": "Merge Action Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2650, 300],
+      "notes": "Combines results from all action handlers"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all action results\nconst items = $input.all();\nconst sessionData = items[0]?.json?.sessionData || $('Parse AI Response').item.json.sessionData;\nconst aiResponse = $('Parse AI Response').item.json.aiResponse;\n\nconst actionResults = items.map(item => ({\n  type: item.json.type,\n  filePath: item.json.filePath,\n  success: true,\n  output: item.json.output || item.json.content\n}));\n\n// Build response for user\nconst response = {\n  message: aiResponse,\n  actions: actionResults,\n  files: Object.keys(sessionData.files),\n  devServer: sessionData.projectState.devServer,\n  timestamp: new Date().toISOString()\n};\n\nreturn { response, sessionData };"
+      },
+      "id": "build-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2850, 300],
+      "notes": "Constructs final response with AI message and action results"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $('Chat Webhook').item.json.body.sessionId }}_context",
+        "value": "={{ JSON.stringify($json.sessionData) }}",
+        "options": {
+          "ttl": 86400
+        }
+      },
+      "id": "save-session-context",
+      "name": "Save Session Context",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [3050, 300],
+      "notes": "Persists updated session state to Redis (24hr TTL)"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "send-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3250, 300],
+      "notes": "Returns JSON response to client with AI message and action results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No actions found - just return AI response\nconst aiResponse = $json.aiResponse;\nconst sessionData = $json.sessionData;\n\nreturn {\n  response: {\n    message: aiResponse,\n    actions: [],\n    timestamp: new Date().toISOString()\n  },\n  sessionData\n};"
+      },
+      "id": "build-text-response",
+      "name": "Build Text Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400],
+      "notes": "Handles responses without actions (discussion mode)"
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "files/:sessionId",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-get-files",
+      "name": "Get Files Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 600],
+      "webhookId": "bolt-files",
+      "notes": "GET endpoint to retrieve project files for a session"
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "bucketName": "bolt-projects",
+        "prefix": "={{ $json.params.sessionId }}/"
+      },
+      "id": "list-session-files",
+      "name": "List Session Files",
+      "type": "n8n-nodes-base.aws.s3",
+      "typeVersion": 1,
+      "position": [450, 600],
+      "credentials": {
+        "aws": {
+          "id": "aws-credentials",
+          "name": "AWS S3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-with-files",
+      "name": "Respond with Files",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [650, 600]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "deploy/:platform",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-deploy",
+      "name": "Deploy Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 900],
+      "webhookId": "bolt-deploy",
+      "notes": "POST endpoint to deploy project to Vercel/Netlify"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.params.platform }}",
+              "rightValue": "vercel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-deploy-platform",
+      "name": "Route Deploy Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [450, 900]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "requestMethod": "POST",
+        "url": "https://api.vercel.com/v13/deployments",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "={{ $('Deploy Webhook').item.json.body.projectName }}"
+            },
+            {
+              "name": "files",
+              "value": "={{ $('Deploy Webhook').item.json.body.files }}"
+            },
+            {
+              "name": "target",
+              "value": "production"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "deploy-to-vercel",
+      "name": "Deploy to Vercel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 800],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "vercel-token",
+          "name": "Vercel API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "requestMethod": "POST",
+        "url": "https://api.netlify.com/api/v1/sites",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "={{ $('Deploy Webhook').item.json.body.projectName }}"
+            },
+            {
+              "name": "repo",
+              "value": "={{ $('Deploy Webhook').item.json.body.repo }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "deploy-to-netlify",
+      "name": "Deploy to Netlify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 1000],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "netlify-token",
+          "name": "Netlify API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { deploymentUrl: $json.url, status: 'success' } }}",
+        "options": {}
+      },
+      "id": "respond-deploy-success",
+      "name": "Respond Deploy Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [850, 900]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Load Session Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Session Context": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Context": {
+      "main": [
+        [
+          {
+            "node": "Route by Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Provider": {
+      "main": [
+        [
+          {
+            "node": "OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Anthropic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Has Actions?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Actions?": {
+      "main": [
+        [
+          {
+            "node": "Split Artifacts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Text Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Artifacts": {
+      "main": [
+        [
+          {
+            "node": "Split Actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Actions": {
+      "main": [
+        [
+          {
+            "node": "Route by Action Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Action Type": {
+      "main": [
+        [
+          {
+            "node": "Save File (S3/Storage)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Shell Command",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start Dev Server",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save File (S3/Storage)": {
+      "main": [
+        [
+          {
+            "node": "Update File State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Shell Command": {
+      "main": [
+        [
+          {
+            "node": "Update Command History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Dev Server": {
+      "main": [
+        [
+          {
+            "node": "Update Server State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update File State": {
+      "main": [
+        [
+          {
+            "node": "Merge Action Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Command History": {
+      "main": [
+        [
+          {
+            "node": "Merge Action Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Server State": {
+      "main": [
+        [
+          {
+            "node": "Merge Action Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Action Results": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Save Session Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Text Response": {
+      "main": [
+        [
+          {
+            "node": "Save Session Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Session Context": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Files Webhook": {
+      "main": [
+        [
+          {
+            "node": "List Session Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Session Files": {
+      "main": [
+        [
+          {
+            "node": "Respond with Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy Webhook": {
+      "main": [
+        [
+          {
+            "node": "Route Deploy Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Deploy Platform": {
+      "main": [
+        [
+          {
+            "node": "Deploy to Vercel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deploy to Netlify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy to Vercel": {
+      "main": [
+        [
+          {
+            "node": "Respond Deploy Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy to Netlify": {
+      "main": [
+        [
+          {
+            "node": "Respond Deploy Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "bolt-diy-workflow"
+  },
+  "id": "bolt-diy-workflow",
+  "tags": []
+}
