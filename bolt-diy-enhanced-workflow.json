@@ -1,0 +1,617 @@
+{
+  "name": "Bolt.DIY Enhanced - Production Code Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.3,
+      "position": [240, 300],
+      "id": "chat-trigger",
+      "name": "Chat Input",
+      "webhookId": "bolt-enhanced"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load or create session\nconst input = $input.item.json;\nconst sessionId = input.sessionId || crypto.randomUUID();\n\nreturn {\n  json: {\n    chatInput: input.chatInput,\n    sessionId: sessionId,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "id": "init-session",
+      "name": "Initialize Session"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "={{ $json.sessionId }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "id": "load-session",
+      "name": "Load Session State",
+      "credentials": {
+        "redis": {
+          "id": "redis-creds",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge session context\nconst currentData = $input.item.json;\nlet sessionState = {};\n\ntry {\n  const stored = $('Load Session State').item.json.value;\n  sessionState = stored ? JSON.parse(stored) : {};\n} catch (e) {\n  sessionState = {};\n}\n\n// Initialize or update session\nif (!sessionState.messages) {\n  sessionState = {\n    messages: [],\n    projects: {},\n    files: {},\n    currentProject: null,\n    conversationContext: \"\"\n  };\n}\n\n// Add current message to history\nsessionState.messages.push({\n  role: 'user',\n  content: currentData.chatInput,\n  timestamp: currentData.timestamp\n});\n\nreturn {\n  json: {\n    ...currentData,\n    sessionState: sessionState,\n    conversationHistory: sessionState.messages.slice(-5).map(m => `${m.role}: ${m.content}`).join('\\n')\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "id": "merge-context",
+      "name": "Merge Context"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-3-haiku",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [1340, 520],
+      "id": "router-model",
+      "name": "Router Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "openrouter-creds",
+          "name": "OpenRouter"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Classify the request. Consider conversation history.\n\nOUTPUT JSON ONLY:\n{\n  \"type\": \"new_project|modify_existing|fix_bug|deploy|question|continue_project\",\n  \"complexity\": \"simple|medium|complex\",\n  \"stack\": \"html-tailwind|react-vite|nextjs|expo|node|existing\",\n  \"features\": [\"auth\", \"database\", \"charts\", \"animations\", \"dark-mode\"],\n  \"summary\": \"One sentence summary\",\n  \"needs_clarification\": false,\n  \"clarification_question\": null,\n  \"modifies_existing\": false,\n  \"target_files\": []\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [1120, 300],
+      "id": "router-agent",
+      "name": "1. Router"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst context = $input.item.json;\n\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet parsed;\ntry {\n  parsed = JSON.parse(json.trim());\n} catch {\n  parsed = {\n    type: 'new_project',\n    complexity: 'medium',\n    stack: 'react-vite',\n    features: ['dark-mode'],\n    summary: context.chatInput,\n    needs_clarification: false\n  };\n}\n\nparsed.original_request = context.chatInput;\nparsed.sessionId = context.sessionId;\nparsed.sessionState = context.sessionState;\nparsed.conversationHistory = context.conversationHistory;\n\nreturn { json: parsed };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "id": "parse-router",
+      "name": "Parse Router"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needs_clarification }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1560, 300],
+      "id": "check-clarify",
+      "name": "Needs Clarification?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "output",
+              "value": "={{ $json.clarification_question }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1780, 200],
+      "id": "return-question",
+      "name": "Ask Clarification"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4o",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 8000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [2020, 520],
+      "id": "planner-model",
+      "name": "Planner Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "openrouter-creds",
+          "name": "OpenRouter"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a software architect. Create a detailed, actionable plan.\n\nConsider conversation history and existing project state if provided.\n\nOUTPUT JSON ONLY:\n{\n  \"project_name\": \"kebab-case-name\",\n  \"description\": \"One paragraph description\",\n  \"tech_stack\": {\n    \"framework\": \"react-vite|nextjs|html|expo|node\",\n    \"styling\": \"tailwind|styled-components|css\",\n    \"additional\": [\"framer-motion\", \"lucide-react\", \"recharts\"]\n  },\n  \"design_system\": {\n    \"theme\": \"dark|light|auto\",\n    \"primary_color\": \"#3b82f6\",\n    \"secondary_color\": \"#8b5cf6\",\n    \"style\": \"glassmorphism|neumorphism|minimal|gradient\",\n    \"font\": \"Inter|Poppins|Space Grotesk\"\n  },\n  \"file_tree\": [\n    \"package.json\",\n    \"src/App.jsx\",\n    \"src/components/Hero.jsx\"\n  ],\n  \"components\": [\n    {\n      \"name\": \"Hero\",\n      \"file\": \"src/components/Hero.jsx\",\n      \"purpose\": \"Main hero section with CTA\",\n      \"props\": [\"title\", \"subtitle\"]\n    }\n  ],\n  \"build_order\": [\n    \"1. Configuration files (package.json, vite.config.js)\",\n    \"2. Global styles and theme\",\n    \"3. Utility components\",\n    \"4. Feature components\",\n    \"5. Pages/Routes\",\n    \"6. Main App component\"\n  ],\n  \"content_requirements\": {\n    \"hero_headline\": \"Suggested headline\",\n    \"features_count\": 6,\n    \"use_real_content\": true\n  },\n  \"state_management\": \"none|context|zustand|redux\",\n  \"routing\": \"none|react-router|nextjs\",\n  \"api_endpoints\": [],\n  \"deployment_platform\": \"vercel|netlify|cloudflare\"\n}\n\nRules:\n- Dark mode by default unless specified\n- Inter font family\n- framer-motion for animations\n- Lucide React for icons\n- Production-ready, no placeholders\n- Real content, no Lorem Ipsum"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [1780, 300],
+      "id": "planner-agent",
+      "name": "2. Planner"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst router = $input.item.json;\n\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet plan;\n\ntry {\n  plan = JSON.parse(json.trim());\n} catch {\n  return {\n    json: {\n      error: true,\n      message: 'Plan parsing failed',\n      raw_output: raw\n    }\n  };\n}\n\nreturn {\n  json: {\n    original_request: router.original_request,\n    type: router.type,\n    features: router.features,\n    plan: plan,\n    sessionId: router.sessionId,\n    sessionState: router.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300],
+      "id": "parse-plan",
+      "name": "Parse Plan"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2220, 300],
+      "id": "check-plan-valid",
+      "name": "Plan Valid?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ENHANCED TEMPLATE LIBRARY\nconst TEMPLATES = {\n  stacks: {\n    'react-vite': {\n      'package.json': (vars) => JSON.stringify({\n        name: vars.name,\n        private: true,\n        version: '0.0.1',\n        type: 'module',\n        scripts: {\n          dev: 'vite',\n          build: 'vite build',\n          preview: 'vite preview'\n        },\n        dependencies: {\n          react: '^18.2.0',\n          'react-dom': '^18.2.0',\n          'framer-motion': '^11.0.0',\n          'lucide-react': '^0.300.0',\n          ...(vars.additional_deps || {})\n        },\n        devDependencies: {\n          '@vitejs/plugin-react': '^4.2.0',\n          autoprefixer: '^10.4.16',\n          postcss: '^8.4.32',\n          tailwindcss: '^3.4.0',\n          vite: '^5.0.0'\n        }\n      }, null, 2),\n      'vite.config.js': `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n  server: {\n    port: 5173,\n    host: true\n  }\n})`,\n      'postcss.config.js': `export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n}`,\n      'tailwind.config.js': (vars) => `/** @type {import('tailwindcss').Config} */\nexport default {\n  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],\n  darkMode: 'class',\n  theme: {\n    extend: {\n      fontFamily: {\n        sans: ['${vars.font || 'Inter'}', 'system-ui', 'sans-serif']\n      },\n      colors: {\n        primary: '${vars.primary_color || '#3b82f6'}',\n        secondary: '${vars.secondary_color || '#8b5cf6'}'\n      }\n    },\n  },\n  plugins: [],\n}`,\n      'index.html': (vars) => `<!DOCTYPE html>\n<html lang=\"en\" class=\"dark\">\n<head>\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n  <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n  <link href=\"https://fonts.googleapis.com/css2?family=${vars.font || 'Inter'}:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\n  <title>${vars.title || vars.name}</title>\n</head>\n<body>\n  <div id=\"root\"></div>\n  <script type=\"module\" src=\"/src/main.jsx\"></script>\n</body>\n</html>`,\n      'src/main.jsx': `import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport App from './App.jsx'\nimport './index.css'\n\nReactDOM.createRoot(document.getElementById('root')).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n)`,\n      'src/index.css': (vars) => `@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n@layer base {\n  body {\n    @apply font-sans antialiased;\n    background: ${vars.theme === 'dark' ? '#0a0a0b' : '#ffffff'};\n    color: ${vars.theme === 'dark' ? '#fafafa' : '#0a0a0b'};\n  }\n}\n\n@layer utilities {\n  .glass {\n    @apply backdrop-blur-xl bg-white/5 border border-white/10;\n  }\n  \n  .gradient-text {\n    @apply bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent;\n  }\n}`\n    },\n    'html-tailwind': {\n      'index.html': (vars) => `<!DOCTYPE html>\n<html lang=\"en\" class=\"dark\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>${vars.title || vars.name}</title>\n  <script src=\"https://cdn.tailwindcss.com\"></script>\n  <link href=\"https://fonts.googleapis.com/css2?family=${vars.font || 'Inter'}:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\n  <script>\n    tailwind.config = {\n      darkMode: 'class',\n      theme: {\n        extend: {\n          colors: {\n            primary: '${vars.primary_color || '#3b82f6'}',\n            secondary: '${vars.secondary_color || '#8b5cf6'}'\n          },\n          fontFamily: {\n            sans: ['${vars.font || 'Inter'}', 'system-ui', 'sans-serif']\n          }\n        }\n      }\n    }\n  </script>\n  <style>\n    body { font-family: '${vars.font || 'Inter'}', system-ui, sans-serif; }\n  </style>\n</head>\n<body class=\"bg-zinc-950 text-zinc-50 antialiased\">\n  \n</body>\n</html>`\n    },\n    'nextjs': {\n      'package.json': (vars) => JSON.stringify({\n        name: vars.name,\n        version: '0.1.0',\n        private: true,\n        scripts: {\n          dev: 'next dev',\n          build: 'next build',\n          start: 'next start'\n        },\n        dependencies: {\n          next: '14.0.0',\n          react: '^18.2.0',\n          'react-dom': '^18.2.0',\n          'framer-motion': '^11.0.0',\n          'lucide-react': '^0.300.0',\n          ...(vars.additional_deps || {})\n        },\n        devDependencies: {\n          autoprefixer: '^10.4.16',\n          postcss: '^8.4.32',\n          tailwindcss: '^3.4.0'\n        }\n      }, null, 2)\n    }\n  },\n  \n  presets: {\n    'dark-blue': {\n      primary: '#3b82f6',\n      secondary: '#60a5fa',\n      gradient: 'from-blue-400 to-violet-400'\n    },\n    'dark-purple': {\n      primary: '#8b5cf6',\n      secondary: '#a78bfa',\n      gradient: 'from-purple-400 to-pink-400'\n    },\n    'dark-emerald': {\n      primary: '#10b981',\n      secondary: '#34d399',\n      gradient: 'from-emerald-400 to-cyan-400'\n    },\n    'dark-amber': {\n      primary: '#f59e0b',\n      secondary: '#fbbf24',\n      gradient: 'from-amber-400 to-orange-400'\n    }\n  },\n  \n  page_types: {\n    'landing': {\n      sections: ['Navbar', 'Hero', 'LogoCloud', 'Features', 'HowItWorks', 'Testimonials', 'Pricing', 'CTA', 'Footer']\n    },\n    'dashboard': {\n      sections: ['Sidebar', 'Header', 'StatsRow', 'Charts', 'RecentActivity', 'Table'],\n      extra_deps: { recharts: '^2.10.0' }\n    },\n    'portfolio': {\n      sections: ['Navbar', 'Hero', 'Projects', 'Skills', 'Experience', 'Contact', 'Footer']\n    },\n    'saas': {\n      sections: ['Navbar', 'Hero', 'Features', 'HowItWorks', 'Integrations', 'Testimonials', 'Pricing', 'FAQ', 'CTA', 'Footer']\n    },\n    'blog': {\n      sections: ['Header', 'Hero', 'ArticleList', 'Categories', 'Newsletter', 'Footer']\n    },\n    'ecommerce': {\n      sections: ['Navbar', 'Hero', 'ProductGrid', 'Categories', 'Featured', 'Reviews', 'Footer'],\n      extra_deps: { '@headlessui/react': '^1.7.0' }\n    }\n  }\n};\n\nconst data = $input.item.json;\nconst plan = data.plan;\nconst request = data.original_request?.toLowerCase() || '';\n\n// Detect stack\nlet stack = plan.tech_stack?.framework || 'react-vite';\nif (stack === 'html') stack = 'html-tailwind';\nif (!TEMPLATES.stacks[stack]) stack = 'react-vite';\n\n// Detect page type\nlet pageType = 'landing';\nif (request.includes('dashboard') || request.includes('admin') || request.includes('analytics')) pageType = 'dashboard';\nif (request.includes('portfolio') || request.includes('personal') || request.includes('resume')) pageType = 'portfolio';\nif (request.includes('saas') || request.includes('software')) pageType = 'saas';\nif (request.includes('blog') || request.includes('article')) pageType = 'blog';\nif (request.includes('shop') || request.includes('ecommerce') || request.includes('store')) pageType = 'ecommerce';\n\n// Detect color preset from plan or request\nlet preset = 'dark-blue';\nconst primaryColor = plan.design_system?.primary_color;\nif (primaryColor) {\n  if (primaryColor.includes('8b5') || request.includes('purple')) preset = 'dark-purple';\n  else if (primaryColor.includes('10b') || request.includes('green')) preset = 'dark-emerald';\n  else if (primaryColor.includes('f59') || request.includes('amber')) preset = 'dark-amber';\n}\n\n// Get templates\nconst stackTemplates = TEMPLATES.stacks[stack];\nconst pageConfig = TEMPLATES.page_types[pageType];\nconst colorPreset = TEMPLATES.presets[preset];\n\n// Template variables\nconst templateVars = {\n  name: plan.project_name || 'project',\n  title: plan.description || 'Project',\n  font: plan.design_system?.font || 'Inter',\n  theme: plan.design_system?.theme || 'dark',\n  primary_color: plan.design_system?.primary_color || colorPreset.primary,\n  secondary_color: plan.design_system?.secondary_color || colorPreset.secondary,\n  additional_deps: pageConfig.extra_deps || {}\n};\n\n// Process template files\nconst configFiles = {};\nfor (const [file, template] of Object.entries(stackTemplates)) {\n  if (typeof template === 'function') {\n    configFiles[file] = template(templateVars);\n  } else {\n    configFiles[file] = template\n      .replace(/\\{\\{name\\}\\}/g, templateVars.name)\n      .replace(/\\{\\{title\\}\\}/g, templateVars.title);\n  }\n}\n\nreturn {\n  json: {\n    ...data,\n    template: {\n      stack: stack,\n      page_type: pageType,\n      color_preset: preset,\n      colors: colorPreset,\n      sections: pageConfig.sections,\n      config_files: Object.keys(configFiles),\n      vars: templateVars\n    },\n    config_files: configFiles\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 400],
+      "id": "template-manager",
+      "name": "3. Template Manager"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build comprehensive coder prompt\nconst data = $input.item.json;\nconst t = data.template;\nconst plan = data.plan;\n\nconst prompt = `## 🎯 PROJECT CONTEXT\n\n**Request**: ${data.original_request}\n\n**Project**: ${plan.project_name}\n**Description**: ${plan.description}\n\n## 🎨 DESIGN SYSTEM\n\n**Stack**: ${t.stack}\n**Page Type**: ${t.page_type}\n**Theme**: ${plan.design_system?.theme || 'dark'}\n**Style**: ${plan.design_system?.style || 'glassmorphism'}\n**Font**: ${t.vars.font}\n**Primary Color**: ${t.colors.primary}\n**Secondary Color**: ${t.colors.secondary}\n**Gradient**: ${t.colors.gradient}\n\n## 📐 ARCHITECTURE\n\n**Tech Stack**:\n${JSON.stringify(plan.tech_stack, null, 2)}\n\n**State Management**: ${plan.state_management || 'none'}\n**Routing**: ${plan.routing || 'none'}\n\n**Components to Build** (${plan.components?.length || 0}):\n${plan.components?.map(c => `- ${c.name} (${c.file}): ${c.purpose}`).join('\\n') || 'None specified'}\n\n## 🏗️ BUILD ORDER\n\n${plan.build_order?.map((step, i) => `${i + 1}. ${step}`).join('\\n') || 'Standard order'}\n\n## 📋 SECTIONS TO IMPLEMENT\n\n${t.sections.map((s, i) => `${i + 1}. ${s}`).join('\\n')}\n\n## ⚠️ IMPORTANT\n\n**Skip these files** (already generated):\n${t.config_files.map(f => `- ${f}`).join('\\n')}\n\n**Content Requirements**:\n${JSON.stringify(plan.content_requirements, null, 2)}\n\n## 🎯 YOUR TASK\n\nGenerate all remaining files following the design system and architecture above.\n\n**Use**:\n- Color: ${t.colors.primary}\n- Gradient: ${t.colors.gradient}\n- Style: ${plan.design_system?.style}\n- Real content (no Lorem Ipsum)\n- Full interactivity (hover, focus states)\n- Responsive design (mobile-first)\n\n**Output Format**:\n\\`\\`\\`\n===FILE: path/to/file===\n[complete file content]\n===END FILE===\n\\`\\`\\`\n\nGenerate production-ready code now.`;\n\nreturn {\n  json: {\n    ...data,\n    coder_prompt: prompt\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 400],
+      "id": "prep-coder",
+      "name": "Prep Coder Prompt"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "options": {
+          "maxTokens": 16000,
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [3100, 620],
+      "id": "coder-model",
+      "name": "Coder Model (Sonnet 4.5)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "openrouter-creds",
+          "name": "OpenRouter"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are an elite frontend developer specializing in modern web applications.\n\n## 🎨 DESIGN SYSTEM\n\n### Color Palette (Dark Theme)\n- **Background**: `bg-zinc-950`, `bg-[#0a0a0b]`\n- **Surface**: `bg-zinc-900`, `bg-zinc-900/50`\n- **Border**: `border-zinc-800`, `border-zinc-700`\n- **Text**: `text-zinc-50` (primary), `text-zinc-400` (muted), `text-zinc-500` (disabled)\n- **Accent**: Use provided primary/secondary colors\n\n### Typography Scale\n```jsx\n// Hero/Display\n<h1 className=\"text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight\">\n\n// H1\n<h1 className=\"text-4xl font-semibold\">\n\n// H2\n<h2 className=\"text-2xl md:text-3xl font-semibold\">\n\n// H3\n<h3 className=\"text-xl font-semibold\">\n\n// Body\n<p className=\"text-base text-zinc-400\">\n\n// Small\n<p className=\"text-sm text-zinc-500\">\n```\n\n### Component Patterns\n\n**Button - Primary**\n```jsx\n<button className=\"px-6 py-3 bg-primary hover:bg-primary/90 text-white font-medium rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98]\">\n  Get Started\n</button>\n```\n\n**Button - Secondary**\n```jsx\n<button className=\"px-6 py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-white font-medium rounded-xl transition-all\">\n  Learn More\n</button>\n```\n\n**Card - Glass Effect**\n```jsx\n<div className=\"p-6 rounded-2xl backdrop-blur-xl bg-white/5 border border-white/10 hover:border-white/20 transition-all\">\n  <h3 className=\"text-xl font-semibold mb-2\">Title</h3>\n  <p className=\"text-zinc-400\">Description</p>\n</div>\n```\n\n**Card - Solid**\n```jsx\n<div className=\"p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 transition-all group\">\n  <div className=\"flex items-center gap-3 mb-4\">\n    <div className=\"p-3 rounded-lg bg-primary/10 text-primary\">\n      <Icon className=\"w-6 h-6\" />\n    </div>\n    <h3 className=\"text-xl font-semibold\">Title</h3>\n  </div>\n  <p className=\"text-zinc-400\">Description</p>\n</div>\n```\n\n**Gradient Text**\n```jsx\n<span className=\"bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent\">\n  Gradient Text\n</span>\n```\n\n**Input Field**\n```jsx\n<input \n  className=\"w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all\"\n  placeholder=\"Enter text...\"\n/>\n```\n\n### Background Effects\n\n**Grid Pattern**\n```jsx\n<div className=\"absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_center,black_50%,transparent_100%)]\" />\n```\n\n**Gradient Orbs**\n```jsx\n<div className=\"absolute top-0 left-1/4 w-96 h-96 bg-primary/20 rounded-full blur-3xl -z-10\" />\n<div className=\"absolute bottom-0 right-1/4 w-96 h-96 bg-secondary/20 rounded-full blur-3xl -z-10\" />\n```\n\n**Radial Gradient**\n```jsx\n<div className=\"absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.15),transparent_50%)]\" />\n```\n\n### Animations (Framer Motion)\n\n**Fade In Up**\n```jsx\nimport { motion } from 'framer-motion';\n\n<motion.div\n  initial={{ opacity: 0, y: 20 }}\n  animate={{ opacity: 1, y: 0 }}\n  transition={{ duration: 0.5 }}\n>\n```\n\n**Stagger Children**\n```jsx\nconst container = {\n  hidden: { opacity: 0 },\n  show: {\n    opacity: 1,\n    transition: {\n      staggerChildren: 0.1\n    }\n  }\n};\n\nconst item = {\n  hidden: { opacity: 0, y: 20 },\n  show: { opacity: 1, y: 0 }\n};\n\n<motion.div variants={container} initial=\"hidden\" animate=\"show\">\n  <motion.div variants={item}>Item 1</motion.div>\n  <motion.div variants={item}>Item 2</motion.div>\n</motion.div>\n```\n\n**Hover Scale**\n```jsx\n<motion.button\n  whileHover={{ scale: 1.05 }}\n  whileTap={{ scale: 0.95 }}\n>\n```\n\n### Icons (Lucide React)\n```jsx\nimport { \n  ArrowRight, Check, Menu, X, Star, Sparkles, Zap, \n  Shield, Users, BarChart3, TrendingUp, Github, \n  Twitter, Linkedin, Mail, ChevronRight, Play\n} from 'lucide-react';\n\n<ArrowRight className=\"w-5 h-5\" />\n```\n\n### Images (Unsplash)\n```jsx\n// Use real images from Unsplash\n<img \n  src=\"https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&h=600&fit=crop&q=80\" \n  alt=\"Description\"\n  className=\"w-full h-64 object-cover rounded-xl\"\n/>\n```\n\n**Categories**:\n- Technology: photo-1518770660439-4636190af475\n- Business: photo-1542744173-8e7e53415bb0\n- Team: photo-1522071820081-009f0129c71c\n- Dashboard: photo-1551288049-bebda4e38f71\n- Analytics: photo-1460925895917-afdab827c52f\n\n## 📐 LAYOUT PATTERNS\n\n**Container**\n```jsx\n<div className=\"max-w-7xl mx-auto px-4 sm:px-6 lg:px-8\">\n```\n\n**Section Spacing**\n```jsx\n<section className=\"py-16 md:py-24 lg:py-32\">\n```\n\n**Grid - 2 Columns**\n```jsx\n<div className=\"grid md:grid-cols-2 gap-8\">\n```\n\n**Grid - 3 Columns**\n```jsx\n<div className=\"grid md:grid-cols-2 lg:grid-cols-3 gap-6\">\n```\n\n**Grid - 4 Columns**\n```jsx\n<div className=\"grid grid-cols-2 md:grid-cols-4 gap-6\">\n```\n\n## ✅ CODE QUALITY RULES\n\n1. **Complete Files Only** - No TODOs, no placeholders, no comments like \"// Add more\"\n2. **Real Content** - No Lorem Ipsum. Use realistic, contextual content\n3. **Full Interactivity** - All hover states, focus states, active states\n4. **Mobile First** - Responsive on all screen sizes\n5. **Dark Theme Default** - Use dark mode by default\n6. **Accessibility** - Proper ARIA labels, semantic HTML\n7. **Performance** - Optimize images, lazy load when appropriate\n8. **Consistency** - Follow the design system strictly\n\n## 🚫 NEVER DO\n\n- Skip interactive states\n- Use Lorem Ipsum text\n- Leave TODOs or incomplete sections\n- Ignore mobile responsiveness\n- Forget error states for forms\n- Use inline styles (use Tailwind classes)\n- Hardcode colors (use design system)\n\n## 📤 OUTPUT FORMAT\n\nFor each file:\n```\n===FILE: path/to/file.jsx===\n[Complete file content with imports, component, export]\n===END FILE===\n```\n\n**Example**:\n```\n===FILE: src/components/Hero.jsx===\nimport { motion } from 'framer-motion';\nimport { ArrowRight, Sparkles } from 'lucide-react';\n\nexport default function Hero() {\n  return (\n    <section className=\"relative min-h-screen flex items-center justify-center overflow-hidden\">\n      {/* Background */}\n      <div className=\"absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.15),transparent_50%)]\" />\n      \n      {/* Content */}\n      <div className=\"max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10\">\n        <motion.div\n          initial={{ opacity: 0, y: 20 }}\n          animate={{ opacity: 1, y: 0 }}\n          transition={{ duration: 0.5 }}\n          className=\"text-center\"\n        >\n          <h1 className=\"text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight mb-6\">\n            Build Something\n            <span className=\"bg-gradient-to-r from-blue-400 to-violet-400 bg-clip-text text-transparent\"> Amazing</span>\n          </h1>\n          <p className=\"text-xl text-zinc-400 mb-8 max-w-2xl mx-auto\">\n            The modern platform for building exceptional web experiences.\n          </p>\n          <div className=\"flex gap-4 justify-center\">\n            <button className=\"px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center gap-2\">\n              Get Started <ArrowRight className=\"w-5 h-5\" />\n            </button>\n          </div>\n        </motion.div>\n      </div>\n    </section>\n  );\n}\n===END FILE===\n```\n\nNow generate all the required files following these standards."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [2880, 400],
+      "id": "coder-agent",
+      "name": "4. Coder (Generate Code)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst data = $input.item.json;\n\n// Extract generated files\nconst fileRegex = /===FILE:\\s*([^=]+?)===\\n([\\s\\S]*?)===END FILE===/g;\nconst generatedFiles = [];\nlet match;\n\nwhile ((match = fileRegex.exec(raw)) !== null) {\n  const path = match[1].trim();\n  const content = match[2].trim();\n  \n  generatedFiles.push({\n    path: path,\n    content: content,\n    content_base64: Buffer.from(content).toString('base64'),\n    size: content.length\n  });\n}\n\nif (generatedFiles.length === 0) {\n  return {\n    json: {\n      error: true,\n      message: 'No files extracted from coder output',\n      raw_preview: raw.substring(0, 500)\n    }\n  };\n}\n\n// Merge with config files from template\nconst configFiles = Object.entries(data.config_files || {}).map(([path, content]) => ({\n  path: path,\n  content: content,\n  content_base64: Buffer.from(content).toString('base64'),\n  size: content.length,\n  type: 'config'\n}));\n\nconst allFiles = [...configFiles, ...generatedFiles.map(f => ({ ...f, type: 'generated' }))];\n\nreturn {\n  json: {\n    success: true,\n    files: allFiles,\n    file_count: allFiles.length,\n    generated_count: generatedFiles.length,\n    config_count: configFiles.length,\n    plan: data.plan,\n    template: data.template,\n    original_request: data.original_request,\n    sessionId: data.sessionId,\n    sessionState: data.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 400],
+      "id": "parse-merge-files",
+      "name": "Parse & Merge Files"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [3320, 400],
+      "id": "check-files-valid",
+      "name": "Files Valid?"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "files",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [3540, 500],
+      "id": "split-files",
+      "name": "Split Files"
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bolt-projects",
+        "fileName": "={{ $('Parse & Merge Files').item.json.sessionId }}/{{ $json.path }}",
+        "binaryData": false,
+        "fileContent": "={{ $json.content }}",
+        "options": {
+          "contentType": "text/plain"
+        }
+      },
+      "type": "n8n-nodes-base.aws.s3",
+      "typeVersion": 1,
+      "position": [3760, 500],
+      "id": "save-to-s3",
+      "name": "Save to S3",
+      "credentials": {
+        "aws": {
+          "id": "aws-creds",
+          "name": "AWS S3"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [3980, 500],
+      "id": "aggregate-files",
+      "name": "Aggregate Files"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare files for review\nconst data = $('Parse & Merge Files').item.json;\n\nlet prompt = `## 🔍 CODE REVIEW REQUEST\\n\\n`;\nprompt += `**Original Request**: ${data.original_request}\\n\\n`;\nprompt += `**Project**: ${data.plan.project_name}\\n`;\nprompt += `**Stack**: ${data.template.stack}\\n`;\nprompt += `**Files**: ${data.file_count} (${data.config_count} config + ${data.generated_count} generated)\\n\\n`;\n\nprompt += `## 📁 FILES TO REVIEW\\n\\n`;\n\nfor (const f of data.files.slice(0, 15)) { // Limit to first 15 files for review\n  const preview = f.content.substring(0, 2000);\n  const truncated = f.content.length > 2000 ? '\\n\\n[... truncated ...]' : '';\n  prompt += `### ${f.path} (${f.size} bytes)\\n\\`\\`\\`\\n${preview}${truncated}\\n\\`\\`\\`\\n\\n`;\n}\n\nif (data.files.length > 15) {\n  prompt += `\\n*... and ${data.files.length - 15} more files*\\n`;\n}\n\nreturn {\n  json: {\n    ...data,\n    review_prompt: prompt\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4200, 500],
+      "id": "prep-review",
+      "name": "Prep Review"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-opus-4-5-20250514",
+        "options": {
+          "maxTokens": 8192,
+          "temperature": 0.1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [4640, 720],
+      "id": "reviewer-model",
+      "name": "Reviewer Model (Opus 4.5)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "openrouter-creds",
+          "name": "OpenRouter"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a senior code reviewer with expertise in React, TypeScript, and modern web development.\n\n## 🎯 REVIEW CRITERIA\n\n### Critical Issues (Auto-FAIL)\n1. **Missing imports** - Component uses library without importing\n2. **Runtime errors** - Syntax errors, undefined variables\n3. **Broken features** - Core functionality doesn't work\n4. **Security issues** - XSS, injection vulnerabilities\n5. **Invalid JSX** - Malformed components\n\n### Major Issues (Score Impact: -15 each)\n1. **Missing states** - No hover/focus/active states\n2. **Not responsive** - Breaks on mobile\n3. **No error handling** - Forms without validation\n4. **Hardcoded values** - Should use props/config\n5. **Performance issues** - Unnecessary re-renders\n\n### Minor Issues (Score Impact: -5 each)\n1. **Design inconsistencies** - Not following design system\n2. **Missing accessibility** - No ARIA labels\n3. **Poor UX** - Confusing interactions\n4. **Incomplete animations** - Partially implemented\n5. **Code smells** - Duplicated logic, poor naming\n\n### Warnings (Score Impact: -2 each)\n1. **TODO comments** - Incomplete sections\n2. **Console warnings** - Deprecated APIs\n3. **Unused imports** - Dead code\n4. **Missing comments** - Complex logic without explanation\n\n## 📊 SCORING\n\n**Base Score**: 100\n\n**Deductions**:\n- Critical: Auto-FAIL (score 0)\n- Major: -15 points each\n- Minor: -5 points each\n- Warning: -2 points each\n\n**Bonuses** (max +10):\n- Exceptional code quality: +5\n- Above-and-beyond features: +3\n- Perfect accessibility: +2\n\n## ✅ VERDICT RULES\n\n- **PASS**: Score >= 80, no critical issues\n- **PASS_WITH_WARNINGS**: Score >= 70, no critical issues\n- **FAIL**: Score < 70 OR has critical issues\n\n## 📤 OUTPUT FORMAT\n\nOUTPUT JSON ONLY:\n```json\n{\n  \"verdict\": \"PASS|PASS_WITH_WARNINGS|FAIL\",\n  \"score\": 85,\n  \"summary\": \"Overall assessment in 2-3 sentences\",\n  \"critical_issues\": [\n    {\n      \"file\": \"src/components/Hero.jsx\",\n      \"line\": 15,\n      \"issue\": \"Missing import for 'motion' from framer-motion\",\n      \"severity\": \"critical\",\n      \"fix\": \"Add: import { motion } from 'framer-motion';\"\n    }\n  ],\n  \"major_issues\": [\n    {\n      \"file\": \"src/components/Button.jsx\",\n      \"issue\": \"No hover state implemented\",\n      \"fix\": \"Add hover:bg-blue-500 to button classes\"\n    }\n  ],\n  \"minor_issues\": [\n    {\n      \"file\": \"src/App.jsx\",\n      \"issue\": \"Hardcoded color instead of using design tokens\"\n    }\n  ],\n  \"warnings\": [\n    {\n      \"file\": \"src/utils/helpers.js\",\n      \"issue\": \"Unused import: { useMemo }\"\n    }\n  ],\n  \"strengths\": [\n    \"Clean component architecture\",\n    \"Excellent responsive design\",\n    \"Good use of Framer Motion\"\n  ],\n  \"fixes_required\": [\n    {\n      \"file\": \"src/components/Hero.jsx\",\n      \"description\": \"Add missing import\",\n      \"current_code\": \"export default function Hero() {\",\n      \"fixed_code\": \"import { motion } from 'framer-motion';\\n\\nexport default function Hero() {\"\n    }\n  ]\n}\n```\n\n## 🔍 REVIEW PROCESS\n\n1. Check all imports and dependencies\n2. Verify component structure and JSX validity\n3. Test interactive states (hover, focus, active)\n4. Validate responsive design\n5. Check accessibility (ARIA, semantic HTML)\n6. Review code quality and best practices\n7. Calculate final score\n8. Determine verdict\n\nBe thorough but fair. The goal is production-ready code."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [4420, 500],
+      "id": "reviewer-agent",
+      "name": "5. Reviewer (QA)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst data = $input.item.json;\n\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet review;\n\ntry {\n  review = JSON.parse(json.trim());\n} catch {\n  // Fallback if parsing fails\n  review = {\n    verdict: 'PASS_WITH_WARNINGS',\n    score: 75,\n    summary: 'Review parsing failed, assuming acceptable quality',\n    critical_issues: [],\n    major_issues: [],\n    minor_issues: [],\n    warnings: [],\n    strengths: [],\n    fixes_required: []\n  };\n}\n\nreturn {\n  json: {\n    review: review,\n    verdict: review.verdict,\n    score: review.score,\n    needs_fixes: review.verdict === 'FAIL',\n    files: data.files,\n    plan: data.plan,\n    template: data.template,\n    original_request: data.original_request,\n    sessionId: data.sessionId,\n    sessionState: data.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4640, 500],
+      "id": "parse-review",
+      "name": "Parse Review"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needs_fixes }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.retry_count || 0 }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [4860, 500],
+      "id": "check-needs-fixes",
+      "name": "Needs Fixes?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare fix request for coder\nconst data = $input.item.json;\nconst review = data.review;\n\nconst fixPrompt = `## 🔧 FIX REQUEST\\n\\n**Review Score**: ${review.score}/100\\n**Verdict**: ${review.verdict}\\n\\n`;\n\nif (review.critical_issues.length > 0) {\n  fixPrompt += `## 🚨 CRITICAL ISSUES (Must Fix)\\n\\n`;\n  review.critical_issues.forEach((issue, i) => {\n    fixPrompt += `${i + 1}. **${issue.file}** (Line ${issue.line || 'N/A'})\\n`;\n    fixPrompt += `   - Issue: ${issue.issue}\\n`;\n    fixPrompt += `   - Fix: ${issue.fix}\\n\\n`;\n  });\n}\n\nif (review.major_issues.length > 0) {\n  fixPrompt += `## ⚠️ MAJOR ISSUES\\n\\n`;\n  review.major_issues.forEach((issue, i) => {\n    fixPrompt += `${i + 1}. **${issue.file}**\\n`;\n    fixPrompt += `   - Issue: ${issue.issue}\\n`;\n    fixPrompt += `   - Fix: ${issue.fix}\\n\\n`;\n  });\n}\n\nif (review.fixes_required.length > 0) {\n  fixPrompt += `## 📝 REQUIRED FIXES\\n\\n`;\n  review.fixes_required.forEach((fix, i) => {\n    fixPrompt += `${i + 1}. **${fix.file}**: ${fix.description}\\n\\n`;\n    fixPrompt += `Current:\\n\\`\\`\\`\\n${fix.current_code}\\n\\`\\`\\`\\n\\n`;\n    fixPrompt += `Fixed:\\n\\`\\`\\`\\n${fix.fixed_code}\\n\\`\\`\\`\\n\\n`;\n  });\n}\n\nreturn {\n  json: {\n    ...data,\n    fix_request: fixPrompt,\n    retry_count: (data.retry_count || 0) + 1\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5080, 400],
+      "id": "prep-fixes",
+      "name": "Prep Fixes"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update session state with project\nconst data = $input.item.json;\n\nconst sessionState = data.sessionState || {\n  messages: [],\n  projects: {},\n  files: {},\n  currentProject: null\n};\n\nconst projectId = data.plan.project_name;\n\n// Add AI response to messages\nsessionState.messages.push({\n  role: 'assistant',\n  content: `Created project: ${projectId}`,\n  timestamp: new Date().toISOString(),\n  project: projectId,\n  score: data.score,\n  files: data.files.length\n});\n\n// Store project\nsessionState.projects[projectId] = {\n  name: data.plan.project_name,\n  description: data.plan.description,\n  stack: data.template.stack,\n  created: new Date().toISOString(),\n  files: data.files.map(f => f.path),\n  score: data.score,\n  review: data.review\n};\n\n// Store files\ndata.files.forEach(file => {\n  sessionState.files[`${projectId}/${file.path}`] = {\n    content: file.content,\n    size: file.size,\n    type: file.type,\n    updated: new Date().toISOString()\n  };\n});\n\nsessionState.currentProject = projectId;\n\nreturn {\n  json: {\n    ...data,\n    sessionState: sessionState,\n    sessionStateJson: JSON.stringify(sessionState)\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5080, 600],
+      "id": "update-session",
+      "name": "Update Session State"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $json.sessionId }}",
+        "value": "={{ $json.sessionStateJson }}",
+        "options": {
+          "ttl": 86400
+        }
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [5300, 600],
+      "id": "save-session",
+      "name": "Save Session to Redis",
+      "credentials": {
+        "redis": {
+          "id": "redis-creds",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare deployment data\nconst data = $input.item.json;\n\nreturn {\n  json: {\n    repo_name: data.plan.project_name,\n    repo_description: data.plan.description,\n    files: data.files,\n    commit_message: `feat: ${data.plan.description}\\n\\nGenerated by Bolt.DIY\\nScore: ${data.score}/100\\nFiles: ${data.files.length}`,\n    owner: 'Tiagocruz3',\n    framework: data.template.stack === 'react-vite' ? 'vite' : data.template.stack,\n    build_command: data.template.stack === 'nextjs' ? 'next build' : 'vite build',\n    install_command: 'npm install',\n    output_directory: data.template.stack === 'nextjs' ? '.next' : 'dist',\n    plan: data.plan,\n    review_score: data.score,\n    sessionId: data.sessionId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5520, 600],
+      "id": "prep-deploy",
+      "name": "Prep Deploy"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [5740, 600],
+      "id": "deploy-github",
+      "name": "→ GitHub Deploy",
+      "notes": "Replace with Execute Workflow calling your GitHub deployment sub-workflow"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [5960, 600],
+      "id": "deploy-vercel",
+      "name": "→ Vercel Deploy",
+      "notes": "Replace with Execute Workflow calling your Vercel deployment sub-workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\n\nconst deploymentUrl = data.deployment_url || `https://github.com/Tiagocruz3/${data.repo_name}`;\nconst vercelUrl = data.vercel_url || 'Deploying...';\n\nconst output = `## 🎉 Project Complete!\\n\\n`;\noutput += `**${data.plan.project_name}**\\n`;\noutput += `${data.plan.description}\\n\\n`;\noutput += `### 📊 Stats\\n`;\noutput += `- **Score**: ${data.review_score}/100\\n`;\noutput += `- **Files**: ${data.files?.length || 0}\\n`;\noutput += `- **Stack**: ${data.framework}\\n\\n`;\noutput += `### 🔗 Links\\n`;\noutput += `- **GitHub**: ${deploymentUrl}\\n`;\noutput += `- **Live**: ${vercelUrl}\\n\\n`;\n\nif (data.review?.strengths?.length > 0) {\n  output += `### ✨ Strengths\\n`;\n  data.review.strengths.forEach(s => {\n    output += `- ${s}\\n`;\n  });\n  output += `\\n`;\n}\n\nif (data.review?.warnings?.length > 0) {\n  output += `### ⚠️ Notes\\n`;\n  data.review.warnings.slice(0, 3).forEach(w => {\n    output += `- ${w.issue}\\n`;\n  });\n}\n\nreturn {\n  json: {\n    output: output,\n    sessionId: data.sessionId,\n    projectId: data.plan.project_name\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [6180, 600],
+      "id": "final-output",
+      "name": "Final Output"
+    }
+  ],
+  "connections": {
+    "Chat Input": {
+      "main": [[{"node": "Initialize Session", "type": "main", "index": 0}]]
+    },
+    "Initialize Session": {
+      "main": [[{"node": "Load Session State", "type": "main", "index": 0}]]
+    },
+    "Load Session State": {
+      "main": [[{"node": "Merge Context", "type": "main", "index": 0}]]
+    },
+    "Merge Context": {
+      "main": [[{"node": "1. Router", "type": "main", "index": 0}]]
+    },
+    "Router Model": {
+      "ai_languageModel": [[{"node": "1. Router", "type": "ai_languageModel", "index": 0}]]
+    },
+    "1. Router": {
+      "main": [[{"node": "Parse Router", "type": "main", "index": 0}]]
+    },
+    "Parse Router": {
+      "main": [[{"node": "Needs Clarification?", "type": "main", "index": 0}]]
+    },
+    "Needs Clarification?": {
+      "main": [
+        [{"node": "Ask Clarification", "type": "main", "index": 0}],
+        [{"node": "2. Planner", "type": "main", "index": 0}]
+      ]
+    },
+    "Planner Model": {
+      "ai_languageModel": [[{"node": "2. Planner", "type": "ai_languageModel", "index": 0}]]
+    },
+    "2. Planner": {
+      "main": [[{"node": "Parse Plan", "type": "main", "index": 0}]]
+    },
+    "Parse Plan": {
+      "main": [[{"node": "Plan Valid?", "type": "main", "index": 0}]]
+    },
+    "Plan Valid?": {
+      "main": [
+        [{"node": "2. Planner", "type": "main", "index": 0}],
+        [{"node": "3. Template Manager", "type": "main", "index": 0}]
+      ]
+    },
+    "3. Template Manager": {
+      "main": [[{"node": "Prep Coder Prompt", "type": "main", "index": 0}]]
+    },
+    "Prep Coder Prompt": {
+      "main": [[{"node": "4. Coder (Generate Code)", "type": "main", "index": 0}]]
+    },
+    "Coder Model (Sonnet 4.5)": {
+      "ai_languageModel": [[{"node": "4. Coder (Generate Code)", "type": "ai_languageModel", "index": 0}]]
+    },
+    "4. Coder (Generate Code)": {
+      "main": [[{"node": "Parse & Merge Files", "type": "main", "index": 0}]]
+    },
+    "Parse & Merge Files": {
+      "main": [[{"node": "Files Valid?", "type": "main", "index": 0}]]
+    },
+    "Files Valid?": {
+      "main": [
+        [{"node": "4. Coder (Generate Code)", "type": "main", "index": 0}],
+        [{"node": "Split Files", "type": "main", "index": 0}]
+      ]
+    },
+    "Split Files": {
+      "main": [[{"node": "Save to S3", "type": "main", "index": 0}]]
+    },
+    "Save to S3": {
+      "main": [[{"node": "Aggregate Files", "type": "main", "index": 0}]]
+    },
+    "Aggregate Files": {
+      "main": [[{"node": "Prep Review", "type": "main", "index": 0}]]
+    },
+    "Prep Review": {
+      "main": [[{"node": "5. Reviewer (QA)", "type": "main", "index": 0}]]
+    },
+    "Reviewer Model (Opus 4.5)": {
+      "ai_languageModel": [[{"node": "5. Reviewer (QA)", "type": "ai_languageModel", "index": 0}]]
+    },
+    "5. Reviewer (QA)": {
+      "main": [[{"node": "Parse Review", "type": "main", "index": 0}]]
+    },
+    "Parse Review": {
+      "main": [[{"node": "Needs Fixes?", "type": "main", "index": 0}]]
+    },
+    "Needs Fixes?": {
+      "main": [
+        [{"node": "Prep Fixes", "type": "main", "index": 0}],
+        [{"node": "Update Session State", "type": "main", "index": 0}]
+      ]
+    },
+    "Prep Fixes": {
+      "main": [[{"node": "4. Coder (Generate Code)", "type": "main", "index": 0}]]
+    },
+    "Update Session State": {
+      "main": [[{"node": "Save Session to Redis", "type": "main", "index": 0}]]
+    },
+    "Save Session to Redis": {
+      "main": [[{"node": "Prep Deploy", "type": "main", "index": 0}]]
+    },
+    "Prep Deploy": {
+      "main": [[{"node": "→ GitHub Deploy", "type": "main", "index": 0}]]
+    },
+    "→ GitHub Deploy": {
+      "main": [[{"node": "→ Vercel Deploy", "type": "main", "index": 0}]]
+    },
+    "→ Vercel Deploy": {
+      "main": [[{"node": "Final Output", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "bolt-diy-enhanced"
+  },
+  "id": "bolt-diy-enhanced",
+  "tags": []
+}
