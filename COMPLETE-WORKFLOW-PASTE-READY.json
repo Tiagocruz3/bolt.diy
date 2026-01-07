@@ -1,0 +1,629 @@
+{
+  "name": "Bolt.DIY - Complete Enhanced Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.3,
+      "position": [240, 900],
+      "id": "chat-input",
+      "name": "Chat Input",
+      "webhookId": "bolt-enhanced"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.item.json;\nconst sessionId = input.sessionId || crypto.randomUUID();\n\nreturn {\n  json: {\n    chatInput: input.chatInput,\n    sessionId: sessionId,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 900],
+      "id": "init-session",
+      "name": "Init Session"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "={{ $json.sessionId }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [680, 900],
+      "id": "load-session",
+      "name": "Load Session",
+      "credentials": {
+        "redis": {
+          "id": "YOUR_REDIS_CREDENTIAL_ID",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const currentData = $input.item.json;\nlet sessionState = {};\n\ntry {\n  const stored = $('Load Session').item.json.value;\n  sessionState = stored ? JSON.parse(stored) : {};\n} catch (e) {\n  sessionState = {};\n}\n\nif (!sessionState.messages) {\n  sessionState = {\n    messages: [],\n    projects: {},\n    files: {},\n    currentProject: null\n  };\n}\n\nsessionState.messages.push({\n  role: 'user',\n  content: currentData.chatInput,\n  timestamp: currentData.timestamp\n});\n\nreturn {\n  json: {\n    ...currentData,\n    sessionState: sessionState,\n    conversationHistory: sessionState.messages.slice(-5).map(m => `${m.role}: ${m.content}`).join('\\n')\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 900],
+      "id": "merge-context",
+      "name": "Merge Context"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-3-haiku",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [1340, 1100],
+      "id": "router-model",
+      "name": "Router Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Classify the request. Consider conversation history if provided.\n\nOUTPUT JSON ONLY:\n{\n  \"type\": \"new_project|modify|fix|deploy|question\",\n  \"complexity\": \"simple|medium|complex\",\n  \"stack\": \"html-tailwind|react-vite|nextjs|expo|node\",\n  \"features\": [\"auth\", \"database\", \"charts\", \"animations\", \"dark-mode\"],\n  \"summary\": \"One sentence\",\n  \"needs_clarification\": false,\n  \"clarification_question\": null\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [1120, 900],
+      "id": "router-agent",
+      "name": "1. Router"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst context = $input.item.json;\n\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet parsed;\n\ntry {\n  parsed = JSON.parse(json.trim());\n} catch {\n  parsed = {\n    type: 'new_project',\n    complexity: 'medium',\n    stack: 'react-vite',\n    features: ['dark-mode'],\n    summary: context.chatInput,\n    needs_clarification: false\n  };\n}\n\nparsed.original_request = context.chatInput;\nparsed.sessionId = context.sessionId;\nparsed.sessionState = context.sessionState;\nparsed.conversationHistory = context.conversationHistory;\n\nreturn { json: parsed };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 900],
+      "id": "parse-router",
+      "name": "Parse Router"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needs_clarification }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1560, 900],
+      "id": "check-clarify",
+      "name": "Clarify?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "output",
+              "value": "={{ $json.clarification_question }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1780, 800],
+      "id": "ask-question",
+      "name": "Ask"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4o-mini",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [2020, 1100],
+      "id": "planner-model",
+      "name": "Planner Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a software architect. Create a detailed plan.\n\nOUTPUT JSON ONLY:\n{\n  \"project_name\": \"kebab-case\",\n  \"description\": \"One paragraph\",\n  \"tech_stack\": { \"framework\": \"react-vite|nextjs|html\", \"styling\": \"tailwind\", \"additional\": [\"framer-motion\", \"lucide-react\"] },\n  \"design_system\": { \"theme\": \"dark\", \"primary_color\": \"#3b82f6\", \"style\": \"glassmorphism\" },\n  \"file_tree\": [\"package.json\", \"src/App.jsx\", \"src/components/Hero.jsx\"],\n  \"components\": [{ \"name\": \"Hero\", \"file\": \"src/components/Hero.jsx\", \"purpose\": \"Main hero section\" }],\n  \"build_order\": [\"1. configs\", \"2. styles\", \"3. components\", \"4. App.jsx\"],\n  \"content_requirements\": { \"hero_headline\": \"Suggested text\", \"features_count\": 6 }\n}\n\nRules: Dark mode default, Inter font, framer-motion for animations."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [1780, 900],
+      "id": "planner-agent",
+      "name": "2. Planner"
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.toolThink",
+      "typeVersion": 1.1,
+      "position": [1860, 1100],
+      "id": "think-tool",
+      "name": "Think"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst router = $input.item.json;\n\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet plan;\n\ntry {\n  plan = JSON.parse(json.trim());\n} catch {\n  return { json: { error: true, message: 'Plan parse failed' } };\n}\n\nreturn {\n  json: {\n    original_request: router.original_request,\n    type: router.type,\n    features: router.features,\n    plan: plan,\n    sessionId: router.sessionId,\n    sessionState: router.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 900],
+      "id": "parse-plan",
+      "name": "Parse Plan"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2220, 900],
+      "id": "check-valid",
+      "name": "Valid?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// TEMPLATE LIBRARY (embedded)\nconst TEMPLATES = {\n  stacks: {\n    'react-vite': {\n      'package.json': JSON.stringify({\n        name: '{{name}}', private: true, version: '0.0.1', type: 'module',\n        scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },\n        dependencies: { react: '^18.2.0', 'react-dom': '^18.2.0', 'framer-motion': '^11.0.0', 'lucide-react': '^0.300.0' },\n        devDependencies: { '@vitejs/plugin-react': '^4.2.0', autoprefixer: '^10.4.16', postcss: '^8.4.32', tailwindcss: '^3.4.0', vite: '^5.0.0' }\n      }, null, 2),\n      'vite.config.js': `import { defineConfig } from 'vite'\\nimport react from '@vitejs/plugin-react'\\n\\nexport default defineConfig({\\n  plugins: [react()],\\n})`,\n      'postcss.config.js': `export default {\\n  plugins: {\\n    tailwindcss: {},\\n    autoprefixer: {},\\n  },\\n}`,\n      'tailwind.config.js': `/** @type {import('tailwindcss').Config} */\\nexport default {\\n  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],\\n  theme: {\\n    extend: {\\n      fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },\\n    },\\n  },\\n  plugins: [],\\n}`,\n      'index.html': `<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n  <meta charset=\"UTF-8\" />\\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\\n  <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\\n  <title>{{title}}</title>\\n</head>\\n<body>\\n  <div id=\"root\"></div>\\n  <script type=\"module\" src=\"/src/main.jsx\"></script>\\n</body>\\n</html>`,\n      'src/main.jsx': `import React from 'react'\\nimport ReactDOM from 'react-dom/client'\\nimport App from './App.jsx'\\nimport './index.css'\\n\\nReactDOM.createRoot(document.getElementById('root')).render(\\n  <React.StrictMode>\\n    <App />\\n  </React.StrictMode>,\\n)`,\n      'src/index.css': `@tailwind base;\\n@tailwind components;\\n@tailwind utilities;\\n\\nbody {\\n  font-family: 'Inter', system-ui, sans-serif;\\n  background: #0a0a0b;\\n  color: #fafafa;\\n  -webkit-font-smoothing: antialiased;\\n}`\n    },\n    'html-tailwind': {\n      'index.html': `<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n  <meta charset=\"UTF-8\">\\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\\n  <title>{{title}}</title>\\n  <script src=\"https://cdn.tailwindcss.com\"></script>\\n  <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\\n  <style>body { font-family: 'Inter', system-ui, sans-serif; }</style>\\n</head>\\n<body class=\"bg-zinc-950 text-zinc-50 antialiased\">\\n</body>\\n</html>`\n    }\n  },\n  presets: {\n    'dark-blue': { accent: '#3b82f6', accentHover: '#60a5fa', gradient: 'from-blue-400 to-violet-400' },\n    'dark-purple': { accent: '#8b5cf6', accentHover: '#a78bfa', gradient: 'from-purple-400 to-pink-400' },\n    'dark-emerald': { accent: '#10b981', accentHover: '#34d399', gradient: 'from-emerald-400 to-cyan-400' }\n  },\n  page_types: {\n    'landing': { sections: ['Navbar', 'Hero', 'LogoCloud', 'Features', 'HowItWorks', 'Testimonials', 'Pricing', 'CTA', 'Footer'] },\n    'dashboard': { sections: ['Sidebar', 'Header', 'StatsRow', 'Charts', 'RecentActivity', 'Table'], extra_deps: { recharts: '^2.10.0' } },\n    'portfolio': { sections: ['Navbar', 'Hero', 'Projects', 'Skills', 'Experience', 'Contact', 'Footer'] }\n  }\n};\n\nconst data = $input.item.json;\nconst plan = data.plan;\nconst request = data.original_request?.toLowerCase() || '';\n\n// Detect stack\nlet stack = plan.tech_stack?.framework || 'react-vite';\nif (stack === 'html') stack = 'html-tailwind';\nif (!TEMPLATES.stacks[stack]) stack = 'react-vite';\n\n// Detect page type\nlet pageType = 'landing';\nif (request.includes('dashboard') || request.includes('admin') || request.includes('analytics')) pageType = 'dashboard';\nif (request.includes('portfolio') || request.includes('personal') || request.includes('resume')) pageType = 'portfolio';\n\n// Detect color preset\nlet preset = 'dark-blue';\nif (request.includes('purple') || request.includes('violet')) preset = 'dark-purple';\nif (request.includes('green') || request.includes('emerald')) preset = 'dark-emerald';\n\n// Get stack files and replace placeholders\nconst stackFiles = TEMPLATES.stacks[stack];\nconst processedFiles = {};\nfor (const [file, content] of Object.entries(stackFiles)) {\n  processedFiles[file] = content\n    .replace(/\\{\\{name\\}\\}/g, plan.project_name || 'project')\n    .replace(/\\{\\{title\\}\\}/g, plan.description || 'Project');\n}\n\n// Get page sections\nconst pageConfig = TEMPLATES.page_types[pageType];\nconst colorPreset = TEMPLATES.presets[preset];\n\n// Handle extra deps for dashboard\nif (pageConfig.extra_deps && processedFiles['package.json']) {\n  let pkg = JSON.parse(processedFiles['package.json']);\n  pkg.dependencies = { ...pkg.dependencies, ...pageConfig.extra_deps };\n  processedFiles['package.json'] = JSON.stringify(pkg, null, 2);\n}\n\nreturn {\n  json: {\n    ...data,\n    template: {\n      stack: stack,\n      page_type: pageType,\n      color_preset: preset,\n      colors: colorPreset,\n      sections: pageConfig.sections,\n      config_files: Object.keys(processedFiles)\n    },\n    config_files: processedFiles\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 1000],
+      "id": "template-manager",
+      "name": "3. Template Manager"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build coder prompt with template context\nconst data = $input.item.json;\nconst t = data.template;\nconst plan = data.plan;\n\nconst prompt = `## TEMPLATE CONTEXT\nStack: ${t.stack}\nPage Type: ${t.page_type}\nColor Accent: ${t.colors.accent}\nGradient: ${t.colors.gradient}\n\n## SECTIONS TO BUILD (in order):\n${t.sections.map((s, i) => `${i + 1}. ${s}`).join('\\n')}\n\n## PRE-BUILT CONFIG FILES (already done, skip these):\n${t.config_files.join(', ')}\n\n## PROJECT PLAN:\n${JSON.stringify(plan, null, 2)}\n\n## YOUR TASK:\nGenerate the remaining files. Use the color accent ${t.colors.accent} and gradient ${t.colors.gradient}.\n\nOutput each file as:\n===FILE: path/to/file===\n[content]\n===END FILE===`;\n\nreturn { json: { ...data, coder_prompt: prompt } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 1000],
+      "id": "prep-coder",
+      "name": "Prep Coder"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "options": {
+          "maxTokens": 16000,
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [3100, 1200],
+      "id": "coder-model",
+      "name": "Coder Model (Sonnet 4.5)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are an elite frontend developer. Generate PRODUCTION-READY code.\n\n## OUTPUT FORMAT\nFor each file:\n```\n===FILE: path/to/file===\n[complete file contents]\n===END FILE===\n```\n\n## DESIGN SYSTEM\n\n### Colors (Dark Theme)\n- bg: bg-zinc-950, bg-[#0a0a0b]\n- surface: bg-zinc-900\n- border: border-zinc-800\n- text: text-zinc-50\n- muted: text-zinc-400\n- Use the accent color provided in the template context\n\n### Typography\n- Hero: text-5xl lg:text-7xl font-bold tracking-tight\n- H1: text-4xl font-semibold\n- H2: text-2xl font-semibold\n- Body: text-base text-zinc-400\n\n### Components\n\n**Buttons**\n```jsx\n<button className=\"px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl transition-all hover:scale-[1.02]\">\n```\n\n**Cards**\n```jsx\n<div className=\"p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 transition-all\">\n```\n\n**Glass Effect**\n```jsx\n<div className=\"backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl\">\n```\n\n**Gradient Text**\n```jsx\n<span className=\"bg-gradient-to-r from-blue-400 to-violet-400 bg-clip-text text-transparent\">\n```\n\n**Background Effects**\n```jsx\n{/* Grid */}\n<div className=\"absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:64px_64px]\" />\n\n{/* Gradient Orbs */}\n<div className=\"absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl\" />\n```\n\n### Animations (Framer Motion)\n```jsx\nimport { motion } from 'framer-motion';\n\n<motion.div\n  initial={{ opacity: 0, y: 20 }}\n  animate={{ opacity: 1, y: 0 }}\n  transition={{ duration: 0.5 }}\n>\n```\n\n### Icons (Lucide React)\n```jsx\nimport { ArrowRight, Check, Menu, Star, Sparkles, Zap, Shield, Users, BarChart3 } from 'lucide-react';\n```\n\n### Images (Unsplash)\n```jsx\n<img src=\"https://images.unsplash.com/photo-1551434678-e076c223a692?w=800&h=600&fit=crop\" />\n```\n\n## RULES\n1. Complete files only - no TODOs\n2. Real content - no Lorem ipsum\n3. All interactive states (hover, focus)\n4. Mobile-first responsive\n5. Dark theme by default\n6. DO NOT regenerate config files (package.json, vite.config.js, etc.)\n\nGenerate the code now."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [2880, 1000],
+      "id": "coder-agent",
+      "name": "4. Coder"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst data = $input.item.json;\n\n// Extract generated files\nconst fileRegex = /===FILE:\\s*([^=]+?)===\\n([\\s\\S]*?)===END FILE===/g;\nconst generatedFiles = [];\nlet match;\nwhile ((match = fileRegex.exec(raw)) !== null) {\n  generatedFiles.push({\n    path: match[1].trim(),\n    content: match[2].trim(),\n    content_base64: Buffer.from(match[2].trim()).toString('base64')\n  });\n}\n\nif (generatedFiles.length === 0) {\n  return { json: { error: true, message: 'No files extracted' } };\n}\n\n// Merge with config files from template\nconst configFiles = Object.entries(data.config_files || {}).map(([path, content]) => ({\n  path: path,\n  content: content,\n  content_base64: Buffer.from(content).toString('base64')\n}));\n\nconst allFiles = [...configFiles, ...generatedFiles];\n\nreturn {\n  json: {\n    success: true,\n    files: allFiles,\n    file_count: allFiles.length,\n    generated_count: generatedFiles.length,\n    config_count: configFiles.length,\n    plan: data.plan,\n    template: data.template,\n    original_request: data.original_request,\n    sessionId: data.sessionId,\n    sessionState: data.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 1000],
+      "id": "parse-merge",
+      "name": "Parse + Merge"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [3320, 1000],
+      "id": "check-files",
+      "name": "Valid?"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "files",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [3540, 1100],
+      "id": "split-files",
+      "name": "Split Files"
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "bolt-projects",
+        "fileName": "={{ $('Parse + Merge').item.json.sessionId }}/{{ $json.path }}",
+        "binaryData": false,
+        "fileContent": "={{ $json.content }}",
+        "options": {
+          "contentType": "text/plain"
+        }
+      },
+      "type": "n8n-nodes-base.aws.s3",
+      "typeVersion": 1,
+      "position": [3760, 1100],
+      "id": "save-s3",
+      "name": "Save to S3",
+      "credentials": {
+        "aws": {
+          "id": "YOUR_AWS_S3_CREDENTIAL_ID",
+          "name": "AWS S3"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [3980, 1100],
+      "id": "aggregate-files",
+      "name": "Aggregate Files"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Parse + Merge').item.json;\nlet prompt = `## REVIEW THIS CODE\\n\\n`;\nprompt += `Request: ${data.original_request}\\n\\n`;\nprompt += `Files (${data.file_count}):\\n\\n`;\nfor (const f of data.files.slice(0, 15)) {\n  prompt += `### ${f.path}\\n\\`\\`\\`\\n${f.content.substring(0, 3000)}\\n\\`\\`\\`\\n\\n`;\n}\nreturn { json: { ...data, review_prompt: prompt } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4200, 1100],
+      "id": "prep-review",
+      "name": "Prep Review"
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-opus-4-5-20250514",
+        "options": {
+          "maxTokens": 8192,
+          "temperature": 0.1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [4640, 1300],
+      "id": "reviewer-model",
+      "name": "Reviewer Model (Opus 4.5)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "YOUR_OPENROUTER_CREDENTIAL_ID",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Senior code reviewer. Be thorough but fair.\n\nOUTPUT JSON ONLY:\n{\n  \"verdict\": \"PASS|FAIL|PASS_WITH_WARNINGS\",\n  \"score\": 85,\n  \"summary\": \"Assessment\",\n  \"critical_issues\": [{ \"file\": \"path\", \"issue\": \"description\", \"fix\": \"solution\" }],\n  \"warnings\": [{ \"file\": \"path\", \"issue\": \"description\" }],\n  \"fixes_required\": [{ \"file\": \"path\", \"current_code\": \"bad\", \"fixed_code\": \"good\" }]\n}\n\nVERDICT:\n- PASS: score >= 80, no critical\n- PASS_WITH_WARNINGS: score >= 70, no critical\n- FAIL: score < 70 OR has critical issues\n\nCRITICAL: Missing imports, runtime errors, broken features, security issues\nWARNING: Design inconsistencies, missing states, minor issues"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [4420, 1100],
+      "id": "reviewer-agent",
+      "name": "5. Reviewer"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.output;\nconst data = $input.item.json;\nlet json = raw.match(/```json\\n?([\\s\\S]*?)```/)?.[1] || raw;\nlet review;\ntry { review = JSON.parse(json.trim()); }\ncatch { review = { verdict: 'PASS_WITH_WARNINGS', score: 75, critical_issues: [], fixes_required: [] }; }\nreturn {\n  json: {\n    review: review,\n    verdict: review.verdict,\n    score: review.score,\n    needs_fixes: review.verdict === 'FAIL',\n    files: data.files,\n    plan: data.plan,\n    template: data.template,\n    original_request: data.original_request,\n    sessionId: data.sessionId,\n    sessionState: data.sessionState\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4640, 1100],
+      "id": "parse-review",
+      "name": "Parse Review"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needs_fixes }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.retry_count || 0 }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [4860, 1100],
+      "id": "check-passed",
+      "name": "Passed?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\nreturn {\n  json: {\n    ...data,\n    fix_request: `Fix these issues:\\n${JSON.stringify(data.review.fixes_required, null, 2)}`,\n    retry_count: (data.retry_count || 0) + 1\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5080, 1000],
+      "id": "prep-fixes",
+      "name": "Prep Fixes"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\nconst sessionState = data.sessionState || { messages: [], projects: {}, files: {} };\nconst projectId = data.plan.project_name;\n\nsessionState.messages.push({\n  role: 'assistant',\n  content: `Created project: ${projectId}`,\n  timestamp: new Date().toISOString(),\n  score: data.score\n});\n\nsessionState.projects[projectId] = {\n  name: projectId,\n  description: data.plan.description,\n  stack: data.template.stack,\n  files: data.files.map(f => f.path),\n  score: data.score,\n  created: new Date().toISOString()\n};\n\nreturn {\n  json: {\n    ...data,\n    sessionState: sessionState,\n    sessionStateJson: JSON.stringify(sessionState)\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5080, 1200],
+      "id": "update-session",
+      "name": "Update Session"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $json.sessionId }}",
+        "value": "={{ $json.sessionStateJson }}",
+        "options": {
+          "ttl": 86400
+        }
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [5300, 1200],
+      "id": "save-session",
+      "name": "Save Session",
+      "credentials": {
+        "redis": {
+          "id": "YOUR_REDIS_CREDENTIAL_ID",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\nreturn {\n  json: {\n    repo_name: data.plan.project_name || 'brainiac-' + Date.now(),\n    repo_description: data.plan.description,\n    files: data.files,\n    commit_message: `feat: ${data.plan.description}`,\n    owner: 'Tiagocruz3',\n    framework: data.template.stack === 'react-vite' ? 'vite' : data.template.stack,\n    plan: data.plan,\n    review_score: data.score,\n    sessionId: data.sessionId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5520, 1200],
+      "id": "prep-deploy",
+      "name": "Prep Deploy"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [5740, 1200],
+      "id": "deploy-github",
+      "name": "→ GitHub",
+      "notes": "Replace with Execute Workflow to your GitHub sub-agent"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [5960, 1200],
+      "id": "deploy-vercel",
+      "name": "→ Vercel",
+      "notes": "Replace with Execute Workflow to your Vercel sub-agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.item.json;\nconst msg = `🎉 **Project Complete!**\\n\\n📁 **Repo**: https://github.com/Tiagocruz3/${data.repo_name}\\n🌐 **Live**: ${data.deployment_url || 'Deploying...'}\\n⭐ **Score**: ${data.review_score}/100\\n💾 **Session**: ${data.sessionId}\\n\\n**Files**: ${data.files?.length || 0} | **Stack**: ${data.framework}\\n\\n✅ Files saved to S3\\n✅ Session saved to Redis`;\nreturn { json: { output: msg } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [6180, 1200],
+      "id": "final-output",
+      "name": "Final Output"
+    }
+  ],
+  "connections": {
+    "Chat Input": {
+      "main": [[{"node": "Init Session", "type": "main", "index": 0}]]
+    },
+    "Init Session": {
+      "main": [[{"node": "Load Session", "type": "main", "index": 0}]]
+    },
+    "Load Session": {
+      "main": [[{"node": "Merge Context", "type": "main", "index": 0}]]
+    },
+    "Merge Context": {
+      "main": [[{"node": "1. Router", "type": "main", "index": 0}]]
+    },
+    "Router Model": {
+      "ai_languageModel": [[{"node": "1. Router", "type": "ai_languageModel", "index": 0}]]
+    },
+    "1. Router": {
+      "main": [[{"node": "Parse Router", "type": "main", "index": 0}]]
+    },
+    "Parse Router": {
+      "main": [[{"node": "Clarify?", "type": "main", "index": 0}]]
+    },
+    "Clarify?": {
+      "main": [
+        [{"node": "Ask", "type": "main", "index": 0}],
+        [{"node": "2. Planner", "type": "main", "index": 0}]
+      ]
+    },
+    "Planner Model": {
+      "ai_languageModel": [[{"node": "2. Planner", "type": "ai_languageModel", "index": 0}]]
+    },
+    "2. Planner": {
+      "main": [[{"node": "Parse Plan", "type": "main", "index": 0}]]
+    },
+    "Think": {
+      "ai_tool": [[{"node": "2. Planner", "type": "ai_tool", "index": 0}]]
+    },
+    "Parse Plan": {
+      "main": [[{"node": "Valid?", "type": "main", "index": 0}]]
+    },
+    "Valid?": {
+      "main": [
+        [{"node": "2. Planner", "type": "main", "index": 0}],
+        [{"node": "3. Template Manager", "type": "main", "index": 0}]
+      ]
+    },
+    "3. Template Manager": {
+      "main": [[{"node": "Prep Coder", "type": "main", "index": 0}]]
+    },
+    "Prep Coder": {
+      "main": [[{"node": "4. Coder", "type": "main", "index": 0}]]
+    },
+    "Coder Model (Sonnet 4.5)": {
+      "ai_languageModel": [[{"node": "4. Coder", "type": "ai_languageModel", "index": 0}]]
+    },
+    "4. Coder": {
+      "main": [[{"node": "Parse + Merge", "type": "main", "index": 0}]]
+    },
+    "Parse + Merge": {
+      "main": [[{"node": "Valid?", "type": "main", "index": 0}]]
+    },
+    "Valid?": {
+      "main": [
+        [{"node": "4. Coder", "type": "main", "index": 0}],
+        [{"node": "Split Files", "type": "main", "index": 0}]
+      ]
+    },
+    "Split Files": {
+      "main": [[{"node": "Save to S3", "type": "main", "index": 0}]]
+    },
+    "Save to S3": {
+      "main": [[{"node": "Aggregate Files", "type": "main", "index": 0}]]
+    },
+    "Aggregate Files": {
+      "main": [[{"node": "Prep Review", "type": "main", "index": 0}]]
+    },
+    "Prep Review": {
+      "main": [[{"node": "5. Reviewer", "type": "main", "index": 0}]]
+    },
+    "Reviewer Model (Opus 4.5)": {
+      "ai_languageModel": [[{"node": "5. Reviewer", "type": "ai_languageModel", "index": 0}]]
+    },
+    "5. Reviewer": {
+      "main": [[{"node": "Parse Review", "type": "main", "index": 0}]]
+    },
+    "Parse Review": {
+      "main": [[{"node": "Passed?", "type": "main", "index": 0}]]
+    },
+    "Passed?": {
+      "main": [
+        [{"node": "Prep Fixes", "type": "main", "index": 0}],
+        [{"node": "Update Session", "type": "main", "index": 0}]
+      ]
+    },
+    "Prep Fixes": {
+      "main": [[{"node": "4. Coder", "type": "main", "index": 0}]]
+    },
+    "Update Session": {
+      "main": [[{"node": "Save Session", "type": "main", "index": 0}]]
+    },
+    "Save Session": {
+      "main": [[{"node": "Prep Deploy", "type": "main", "index": 0}]]
+    },
+    "Prep Deploy": {
+      "main": [[{"node": "→ GitHub", "type": "main", "index": 0}]]
+    },
+    "→ GitHub": {
+      "main": [[{"node": "→ Vercel", "type": "main", "index": 0}]]
+    },
+    "→ Vercel": {
+      "main": [[{"node": "Final Output", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-01-07T10:00:00.000Z",
+  "versionId": "1"
+}
